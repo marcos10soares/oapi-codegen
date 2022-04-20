@@ -675,6 +675,12 @@ func GenerateGinServer(t *template.Template, operations []OperationDefinition) (
 	return GenerateTemplates([]string{"gin/gin-interface.tmpl", "gin/gin-wrappers.tmpl", "gin/gin-register.tmpl"}, t, operations)
 }
 
+// GenerateHttpRouterServer This function generates all the go code for the ServerInterface as well as
+// all the wrapper functions around our handlers.
+func GenerateHttpRouterServer(t *template.Template, operations []OperationDefinition) (string, error) {
+	return GenerateTemplates([]string{"httprouter/httprouter-interface.tmpl", "httprouter/httprouter-middleware.tmpl", "httprouter/httprouter-handler.tmpl"}, t, operations)
+}
+
 // Uses the template engine to generate the function which registers our wrappers
 // as Echo path handlers.
 func GenerateClient(t *template.Template, ops []OperationDefinition) (string, error) {
