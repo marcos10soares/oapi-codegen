@@ -1,16 +1,80 @@
-// ServerInterfaceWrapper converts contexts to parameters.
-type ServerInterfaceWrapper struct {
-    Handler ServerInterface
-    HandlerMiddlewares []MiddlewareFunc
-    ErrorHandlerFunc func(w http.ResponseWriter, r *http.Request, err error)
+
+
+type ServerInterface interface {
+	NewRouter(options HttpRouterServerOptions) *httprouter.Router
+	{{range .}}{{$opid := .OperationId}}
+	// {{$opid}} {{.Method }} {{.Path | swaggerUriToGinUri }}
+	{{$opid}}(w http.ResponseWriter, r *http.Request{{if or .RequiresParamObject (gt (len .PathParams) 0)}}, ps httprouter.Params{{else}}, _ httprouter.Params{{end}})
+	{{end}}
 }
 
-type MiddlewareFunc func(http.HandlerFunc) http.HandlerFunc
+// Dependencies is the server dependencies
+type Dependencies server
+
+type ErrorHandlerFunc func(w http.ResponseWriter, r *http.Request, status int, err error)
+
+type HttpRouterServerOptions struct {
+    BaseURL string
+    // BaseRouter httprouter.Router
+    // Middlewares map[string][]func(httprouter.Handle)httprouter.Handle
+    // ErrorHandlerFunc   func(w http.ResponseWriter, r *http.Request, err error)
+}
+
+// server implements ServerInterface methods, validates parameters and calls handlers
+type server struct {
+    Handlers HandlerInterface
+    // HandlerMiddlewares map[string][]func(httprouter.Handle)httprouter.Handle
+    Middlewares *Middlewares
+    ErrorHandlerFunc ErrorHandlerFunc
+}
+
+// New creates a new Server
+func New(d Dependencies) (ServerInterface, error) {
+  err := d.validate()
+  if err != nil {
+    return nil, err
+  }
+
+  return server{
+    Handlers: d.Handlers,
+    Middlewares: d.Middlewares,
+    ErrorHandlerFunc: d.ErrorHandlerFunc,
+  }, nil
+}
+
+func (d Dependencies) validate() error {
+	if d.Handlers == nil {
+		return fmt.Errorf("missing Handlers interface")
+	}
+  if d.Middlewares == nil {
+		return fmt.Errorf("missing Middlewares interface")
+	}
+	if d.ErrorHandlerFunc == nil {
+		return fmt.Errorf("missing ErrorHandlerFunc")
+	}
+	return nil
+}
+
+// Middlewares is a configuration structure that 
+// allows to call different middlewares per route
+type Middlewares struct {
+    {{range .}}{{$opid := .OperationId}}
+    {{$opid}} []func(httprouter.Handle) httprouter.Handle
+    {{- end}}
+}
+
+// HandlerInterface business logic handlers to be called from the http handlers
+type HandlerInterface interface {
+	{{range .}}{{$opid := .OperationId}}
+	// {{$opid}} {{.Method }} {{.Path | swaggerUriToGinUri }}
+	{{$opid}}(r *http.Request{{genParamArgs .PathParams}}{{if .RequiresParamObject}}, params {{.OperationId}}Params{{end}}) ({{with $n := index (getResponseTypeDefinitions .) 0}} *{{$n.Schema.TypeDecl}},{{end}} error)
+	{{end}}
+}
 
 {{range .}}{{$opid := .OperationId}}
 
 // {{$opid}} operation middleware
-func (siw *ServerInterfaceWrapper) {{$opid}}(w http.ResponseWriter, r *http.Request{{if or .RequiresParamObject (gt (len .PathParams) 0)}}, params httprouter.Params{{end}}) {
+func (siw server) {{$opid}}(w http.ResponseWriter, r *http.Request{{if or .RequiresParamObject (gt (len .PathParams) 0)}}, ps httprouter.Params{{else}}, _ httprouter.Params{{end}}) {
   ctx := r.Context()
   {{if or .RequiresParamObject (gt (len .PathParams) 0) }}
   var err error
@@ -20,19 +84,20 @@ func (siw *ServerInterfaceWrapper) {{$opid}}(w http.ResponseWriter, r *http.Requ
   var {{$varName := .GoVariableName}}{{$varName}} {{.TypeDef}}
 
   {{if .IsPassThrough}}
-  {{$varName}} = chi.URLParam(r, "{{.ParamName}}")
+  queryValues := r.URL.Query()
+  {{$varName}} = queryValues.Get("{{.ParamName}}")
   {{end}}
   {{if .IsJson}}
-  err = json.Unmarshal([]byte(chi.URLParam(r, "{{.ParamName}}")), &{{$varName}})
+  err = json.Unmarshal([]byte(queryValues.Get("{{.ParamName}}")), &{{$varName}})
   if err != nil {
-    siw.ErrorHandlerFunc(w, r, &UnmarshalingParamError{ParamName: "{{.ParamName}}", Err: err})
+    siw.ErrorHandlerFunc(w, r, http.StatusBadRequest, &UnmarshalingParamError{ParamName: "{{.ParamName}}", Err: err})
     return
   }
   {{end}}
   {{if .IsStyled}}
-  err = runtime.BindStyledParameter("{{.Style}}",{{.Explode}}, "{{.ParamName}}", chi.URLParam(r, "{{.ParamName}}"), &{{$varName}})
+  err = runtime.BindStyledParameter("{{.Style}}",{{.Explode}}, "{{.ParamName}}", ps.ByName("{{.ParamName}}"), &{{$varName}})
   if err != nil {
-    siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "{{.ParamName}}", Err: err})
+    siw.ErrorHandlerFunc(w, r, http.StatusBadRequest, &InvalidParamFormatError{ParamName: "{{.ParamName}}", Err: err})
     return
   }
   {{end}}
@@ -58,20 +123,20 @@ func (siw *ServerInterfaceWrapper) {{$opid}}(w http.ResponseWriter, r *http.Requ
         var value {{.TypeDef}}
         err = json.Unmarshal([]byte(paramValue), &value)
         if err != nil {
-          siw.ErrorHandlerFunc(w, r, &UnmarshalingParamError{ParamName: "{{.ParamName}}", Err: err})
+          siw.ErrorHandlerFunc(w, r, &UnmarshalingParamError{ParamName: "{{.ParamName}}", Err: err}, , http.StatusBadRequest, err)
           return
         }
 
         params.{{.GoName}} = {{if not .Required}}&{{end}}value
       {{end}}
       }{{if .Required}} else {
-          siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "{{.ParamName}}"})
+          siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "{{.ParamName}}"}, http.StatusBadRequest, fmt.Errorf("parameter {{.ParamName}} is required"))
           return
       }{{end}}
       {{if .IsStyled}}
       err = runtime.BindQueryParameter("{{.Style}}", {{.Explode}}, {{.Required}}, "{{.ParamName}}", r.URL.Query(), &params.{{.GoName}})
       if err != nil {
-        siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "{{.ParamName}}", Err: err})
+        siw.ErrorHandlerFunc(w, r, http.StatusBadRequest, &InvalidParamFormatError{ParamName: "{{.ParamName}}", Err: err})
         return
       }
       {{end}}
@@ -85,7 +150,7 @@ func (siw *ServerInterfaceWrapper) {{$opid}}(w http.ResponseWriter, r *http.Requ
           var {{.GoName}} {{.TypeDef}}
           n := len(valueList)
           if n != 1 {
-            siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "{{.ParamName}}", Count: n})
+            siw.ErrorHandlerFunc(w, r, http.StatusBadRequest, &TooManyValuesForParamError{ParamName: "{{.ParamName}}", Count: n})
             return
           }
 
@@ -96,7 +161,7 @@ func (siw *ServerInterfaceWrapper) {{$opid}}(w http.ResponseWriter, r *http.Requ
         {{if .IsJson}}
           err = json.Unmarshal([]byte(valueList[0]), &{{.GoName}})
           if err != nil {
-            siw.ErrorHandlerFunc(w, r, &UnmarshalingParamError{ParamName: "{{.ParamName}}", Err: err})
+            siw.ErrorHandlerFunc(w, r, http.StatusBadRequest, &UnmarshalingParamError{ParamName: "{{.ParamName}}", Err: err})
             return
           }
         {{end}}
@@ -104,7 +169,7 @@ func (siw *ServerInterfaceWrapper) {{$opid}}(w http.ResponseWriter, r *http.Requ
         {{if .IsStyled}}
           err = runtime.BindStyledParameterWithLocation("{{.Style}}",{{.Explode}}, "{{.ParamName}}", runtime.ParamLocationHeader, valueList[0], &{{.GoName}})
           if err != nil {
-            siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "{{.ParamName}}", Err: err})
+            siw.ErrorHandlerFunc(w, r, http.StatusBadRequest, &InvalidParamFormatError{ParamName: "{{.ParamName}}", Err: err})
             return
           }
         {{end}}
@@ -113,7 +178,7 @@ func (siw *ServerInterfaceWrapper) {{$opid}}(w http.ResponseWriter, r *http.Requ
 
         } {{if .Required}}else {
             err := fmt.Errorf("Header parameter {{.ParamName}} is required, but not found")
-            siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "{{.ParamName}}", Err: err})
+            siw.ErrorHandlerFunc(w, r, http.StatusBadRequest, &RequiredHeaderError{ParamName: "{{.ParamName}}", Err: err})
             return
         }{{end}}
 
@@ -135,13 +200,13 @@ func (siw *ServerInterfaceWrapper) {{$opid}}(w http.ResponseWriter, r *http.Requ
         decoded, err := url.QueryUnescape(cookie.Value)
         if err != nil {
           err = fmt.Errorf("Error unescaping cookie parameter '{{.ParamName}}'")
-          siw.ErrorHandlerFunc(w, r, &UnescapedCookieParamError{ParamName: "{{.ParamName}}", Err: err})
+          siw.ErrorHandlerFunc(w, r, http.StatusBadRequest, &UnescapedCookieParamError{ParamName: "{{.ParamName}}", Err: err})
           return
         }
 
         err = json.Unmarshal([]byte(decoded), &value)
         if err != nil {
-          siw.ErrorHandlerFunc(w, r, &UnmarshalingParamError{ParamName: "{{.ParamName}}", Err: err})
+          siw.ErrorHandlerFunc(w, r, http.StatusBadRequest, &UnmarshalingParamError{ParamName: "{{.ParamName}}", Err: err})
           return
         }
 
@@ -152,7 +217,7 @@ func (siw *ServerInterfaceWrapper) {{$opid}}(w http.ResponseWriter, r *http.Requ
         var value {{.TypeDef}}
         err = runtime.BindStyledParameter("simple",{{.Explode}}, "{{.ParamName}}", cookie.Value, &value)
         if err != nil {
-          siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "{{.ParamName}}", Err: err})
+          siw.ErrorHandlerFunc(w, r, http.StatusBadRequest, &InvalidParamFormatError{ParamName: "{{.ParamName}}", Err: err})
           return
         }
         params.{{.GoName}} = {{if not .Required}}&{{end}}value
@@ -161,22 +226,34 @@ func (siw *ServerInterfaceWrapper) {{$opid}}(w http.ResponseWriter, r *http.Requ
       }
 
       {{- if .Required}} else {
-        siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "{{.ParamName}}"})
+        siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "{{.ParamName}}"}, http.StatusBadRequest, fmt.Errorf("parameter {{.ParamName}} is required"))
         return
       }
       {{- end}}
     {{end}}
   {{end}}
 
-  var handler = func(w http.ResponseWriter, r *http.Request) {
-    siw.Handler.{{.OperationId}}(w, r{{genParamNames .PathParams}}{{if .RequiresParamObject}}, params{{end}})
+  var handler = func(w http.ResponseWriter, r *http.Request{{if or .RequiresParamObject (gt (len .PathParams) 0)}}, ps httprouter.Params{{else}}, _ httprouter.Params{{end}}) {
+    res, err := siw.Handlers.{{.OperationId}}(r{{genParamNames .PathParams}}{{if .RequiresParamObject}}, params{{end}})
+		if err != nil {
+      w.WriteHeader(http.StatusInternalServerError)
+			siw.ErrorHandlerFunc(w, r, http.StatusInternalServerError, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(res)
 }
 
-  for _, middleware := range siw.HandlerMiddlewares {
-    handler = middleware(handler)
-  }
+  // check if it has middleware
+  // if middlewares, ok := siw.Middlewares["{{.OperationId}}"]; ok {
+    // for _, middleware := range middlewares {
+    for _, middleware := range siw.Middlewares.{{.OperationId}} {
+      handler = middleware(handler)
+    }
+  // }
+  
 
-  handler(w, r.WithContext(ctx))
+  handler(w, r.WithContext(ctx){{if or .RequiresParamObject (gt (len .PathParams) 0)}}, ps{{else}}, httprouter.Params{}{{end}})
 }
 {{end}}
 

@@ -678,7 +678,14 @@ func GenerateGinServer(t *template.Template, operations []OperationDefinition) (
 // GenerateHttpRouterServer This function generates all the go code for the ServerInterface as well as
 // all the wrapper functions around our handlers.
 func GenerateHttpRouterServer(t *template.Template, operations []OperationDefinition) (string, error) {
-	return GenerateTemplates([]string{"httprouter/httprouter-interface.tmpl", "httprouter/httprouter-middleware.tmpl", "httprouter/httprouter-handler.tmpl"}, t, operations)
+	// return GenerateTemplates([]string{"httprouter/httprouter-interface.tmpl", "httprouter/httprouter-middleware.tmpl", "httprouter/httprouter-handler.tmpl", "httprouter/httprouter-router.gogo", "httprouter/httprouter-server.gogo", "httprouter/httprouter-servicehandlers.gogo"}, t, operations)
+	return GenerateTemplates(
+		[]string{
+			"httprouter/httprouter-router.gogo",
+			"httprouter/httprouter-server.gogo",
+			"httprouter/httprouter-routes.gogo",
+		},
+		t, operations)
 }
 
 // Uses the template engine to generate the function which registers our wrappers
