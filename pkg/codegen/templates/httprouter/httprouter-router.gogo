@@ -4,7 +4,7 @@ func (s server) NewRouter(options HttpRouterServerOptions) *httprouter.Router {
 
     {{range .}}
     // {{.Method }} {{.Path | swaggerUriToGinUri }}
-    router.{{.Method }}(options.BaseURL+"{{.Path | swaggerUriToGinUri }}", s.{{.OperationId}})
+    router.{{.Method }}(options.PathPrefix+"{{.Path | swaggerUriToGinUri }}", s.{{.OperationId}})
     {{end}}
 
     return router
